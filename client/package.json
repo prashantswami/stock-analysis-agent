@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@uidotdev/usehooks": "^2.4.1",
     "apexcharts": "^4.7.0",
     "axios": "^1.9.0",
     "react": "^19.1.0",

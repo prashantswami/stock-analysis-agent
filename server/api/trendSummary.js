@@ -1,117 +1,140 @@
 import express from 'express';
-import axios from 'axios';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import yahooFinance from 'yahoo-finance2';
 import dotenv from 'dotenv';
 
 dotenv.config();
-
 const router = express.Router();
 
-const alphaVantageApiKey = process.env.ALPHA_VANTAGE_API_KEY;
-const geminiApiKey = process.env.GEMINI_API_KEY;
-
-if (!geminiApiKey) {
-  console.error("Gemini API key is missing. Please set GEMINI_API_KEY in your .env file.");
-}
-const genAI = new GoogleGenerativeAI(geminiApiKey);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest"});
+// No API key needed for Yahoo Finance public data
 
 router.get('/', async (req, res) => {
-  const symbol = req.query.symbol;
-
-  console.log(`Trend Summary: Received symbol '${symbol}'`);
+  const { symbol } = req.query;
 
   if (!symbol) {
-    return res.status(400).json({ error: 'Stock symbol is required' });
-  }
-
-  if (!alphaVantageApiKey) {
-    return res.status(500).json({ error: 'Alpha Vantage API key is missing.' });
-  }
-  if (!geminiApiKey) {
-    return res.status(500).json({ error: 'Gemini API key is missing.' });
+    return res.status(400).json({ error: 'Stock symbol is required for trend summary.' });
   }
 
   try {
-    // 1. Fetch data from Alpha Vantage
-    const alphaVantageUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${alphaVantageApiKey}&outputsize=compact`;
-    console.log(`Trend Summary: Fetching Alpha Vantage URL: ${alphaVantageUrl}`);
+    console.log(`Trend Summary: Fetching data from Yahoo Finance for symbol: ${symbol}`);
 
-    const response = await axios.get(alphaVantageUrl);
-    
-    if (!response.data) {
-      console.error('Error fetching from Alpha Vantage: Response data is undefined or null.');
-      return res.status(500).json({ error: 'Failed to fetch stock data from Alpha Vantage: Empty response.', alphaVantageResponse: null });
+    // 1. Fetch primary quote data (more reliable for current price, change, for all types including indices)
+    const quoteData = await yahooFinance.quote(symbol);
+
+    // 2. Fetch supplementary summary data
+    const summaryDetails = await yahooFinance.quoteSummary(symbol, {
+      modules: ['summaryDetail', 'financialData', 'recommendationTrend', 'earningsTrend'] // Removed 'price' module here
+    });
+
+    if (!quoteData && !summaryDetails) {
+      return res.status(404).json({ error: `No data found for symbol ${symbol}.` });
     }
 
-    const timeSeriesData = response.data['Time Series (Daily)'];
-
-    if (!timeSeriesData) {
-      console.error('Error fetching from Alpha Vantage (timeSeriesData missing):', response.data);
-      let errorMessage = 'Failed to fetch stock data from Alpha Vantage (Time Series (Daily) missing).';
-      if (response.data['Error Message']) {
-        errorMessage += ` Details: ${response.data['Error Message']}`;
-      } else if (response.data['Information']) {
-        errorMessage += ` Info: ${response.data['Information']}`;
-      } else if (response.data['Note']) {
-        errorMessage += ` Note: ${response.data['Note']}`;
-      } else if (Object.keys(response.data).length === 0) {
-        errorMessage = 'Failed to fetch stock data: Alpha Vantage returned an empty object.';
+    const isIndex = symbol.startsWith('^');
+    const displayName = quoteData?.shortName || quoteData?.longName || symbol;
+    let trendText = `Trend Analysis for ${displayName}:\n`;
+    
+    // Use data from quote() for primary market figures
+    if (quoteData) {
+      let priceString = isIndex ? "Current Value: " : `Current Price: ${quoteData.currencySymbol || ''}`;
+      
+      if (quoteData.regularMarketPrice !== undefined) {
+        priceString += `${quoteData.regularMarketPrice.toFixed(2)}`;
+      } else {
+        priceString += 'N/A';
       }
-      return res.status(500).json({ error: errorMessage, alphaVantageResponse: response.data });
+
+      if (quoteData.regularMarketChangePercent !== undefined) {
+        const changePercent = (quoteData.regularMarketChangePercent * 100).toFixed(2);
+        priceString += ` (Change: ${changePercent}%).
+`;
+      } else {
+        priceString += ` (Change: N/A).
+`;
+      }
+      trendText += priceString;
+
+      if (quoteData.fiftyTwoWeekHigh !== undefined && quoteData.fiftyTwoWeekLow !== undefined) {
+        const high = quoteData.fiftyTwoWeekHigh.toFixed(2);
+        const low = quoteData.fiftyTwoWeekLow.toFixed(2);
+        trendText += `52-Week Range: ${low} - ${high}.
+`;
+        
+        if (quoteData.regularMarketPrice !== undefined) {
+          const currentPriceRaw = quoteData.regularMarketPrice;
+          const highRaw = quoteData.fiftyTwoWeekHigh;
+          const lowRaw = quoteData.fiftyTwoWeekLow;
+          const midRange = (highRaw + lowRaw) / 2;
+
+          if (currentPriceRaw > midRange) {
+            trendText += `The ${isIndex ? 'index' : 'stock'} is trading in the upper half of its 52-week range.`;
+          } else {
+            trendText += `The ${isIndex ? 'index' : 'stock'} is trading in the lower half of its 52-week range.`;
+          }
+          const distHigh = ((currentPriceRaw - highRaw) / highRaw * 100).toFixed(1);
+          const distLow = ((currentPriceRaw - lowRaw) / lowRaw * 100).toFixed(1);
+          trendText += ` Distance from 52W High: ${distHigh}%`;
+          trendText += `, from 52W Low: ${distLow}%.
+`;
+        }
+      }
+    } else {
+        trendText += "Current market price data is unavailable.\n";
     }
 
-    const formattedData = Object.entries(timeSeriesData)
-      .slice(0, 30)
-      .map(([date, data]) => ({
-        date: date,
-        close: parseFloat(data['4. close']),
-      }))
-      .reverse();
+    // Use data from quoteSummary() for other details
+    const financialData = summaryDetails?.financialData;
+    const summaryDetail = summaryDetails?.summaryDetail;
+    const recommendationTrend = summaryDetails?.recommendationTrend?.trend?.[0];
+    const earningsTrendData = summaryDetails?.earningsTrend?.trend?.[0];
 
-    if (formattedData.length === 0) {
-      return res.status(404).json({ error: 'No price data found for the last 30 days.' });
+    if (summaryDetail) {
+      if (summaryDetail.trailingPE?.raw !== undefined) trendText += `P/E Ratio (TTM): ${summaryDetail.trailingPE.fmt || summaryDetail.trailingPE.raw.toFixed(2)}.
+`;
+      if (summaryDetail.forwardPE?.raw !== undefined) trendText += `Forward P/E: ${summaryDetail.forwardPE.fmt || summaryDetail.forwardPE.raw.toFixed(2)}.
+`;
+      // Market Cap is often available in `quoteData` as well, and might be more reliable
+      const marketCap = quoteData?.marketCap || summaryDetail.marketCap?.raw;
+      if (marketCap !== undefined) trendText += `Market Cap: ${typeof marketCap === 'number' ? marketCap.toLocaleString() : marketCap}.
+`;
+    }
+
+    if (financialData) {
+      if (financialData.targetMeanPrice?.raw !== undefined) trendText += `Analyst Mean Target Price: ${financialData.targetMeanPrice.fmt || financialData.targetMeanPrice.raw.toFixed(2)}.
+`;
+      if (financialData.recommendationKey) trendText += `Overall Analyst Recommendation: ${financialData.recommendationKey.toUpperCase()}.
+`;
+    }
+
+    if (recommendationTrend) {
+      trendText += `Analyst Actions (StrongBuy/Buy/Hold/Sell/StrongSell) for period ${recommendationTrend.period}: ${recommendationTrend.strongBuy}/${recommendationTrend.buy}/${recommendationTrend.hold}/${recommendationTrend.sell}/${recommendationTrend.strongSell}.
+`;
     }
     
-    const promptContent = `
-      Analyze the stock trend for ${symbol} based on the following daily closing prices for the last ${formattedData.length} trading days.
-      Provide a concise summary of the recent price trend.
-      Is it generally upward, downward, or sideways? Are there any notable patterns or recent shifts?
-      Keep the summary to 2-3 sentences.
-
-      Price Data:
-      ${JSON.stringify(formattedData, null, 2)}
-    `;
-
-    // 3. Send prompt to Gemini
-    const result = await model.generateContent(promptContent);
-    const geminiResponse = await result.response;
-    const trendSummary = geminiResponse.text();
-
-    if (!trendSummary) {
-      return res.status(500).json({ error: 'Failed to generate trend summary from Gemini AI.' });
+    if (earningsTrendData && earningsTrendData.endDate) {
+        const avgEstimate = earningsTrendData.earningsEstimate?.avg?.fmt || (earningsTrendData.earningsEstimate?.avg?.raw !== undefined ? earningsTrendData.earningsEstimate.avg.raw.toFixed(2) : 'N/A');
+        const lowEstimate = earningsTrendData.earningsEstimate?.low?.fmt || (earningsTrendData.earningsEstimate?.low?.raw !== undefined ? earningsTrendData.earningsEstimate.low.raw.toFixed(2) : 'N/A');
+        const highEstimate = earningsTrendData.earningsEstimate?.high?.fmt || (earningsTrendData.earningsEstimate?.high?.raw !== undefined ? earningsTrendData.earningsEstimate.high.raw.toFixed(2) : 'N/A');
+        trendText += `Earnings estimate for quarter ending ${earningsTrendData.endDate}: Avg ${avgEstimate}, Low ${lowEstimate}, High ${highEstimate}.
+`;
     }
 
-    res.json({ symbol, trendSummary, priceDataUsed: formattedData });
+    if (trendText === `Trend Analysis for ${displayName}:\n`) {
+        trendText = `Sufficient detailed trend data could not be generated for ${displayName} from available sources. Basic quote data may be available.`;
+    }
+
+    res.json({ 
+        trendSummary: trendText,
+    });
 
   } catch (error) {
-    console.error('Error in /api/trend-summary:', error.response ? error.response.data : error.message);
-    let statusCode = 500;
-    let message = 'An error occurred while processing your request.';
-
-    if (error.response && error.response.data && error.response.data.error) {
-        message = error.response.data.error;
-    } else if (error.message) {
-        message = error.message;
+    console.error(`Error fetching trend summary from Yahoo Finance for ${symbol}:`, error);
+    if (error.message && (error.message.includes('No fundamentals data found') || error.message.toLowerCase().includes('not found') || error.message.includes('No summary data found'))) {
+        return res.status(404).json({ error: `No data found for symbol ${symbol} to generate trend summary.` });
     }
-    
-    if (error.isAxiosError && error.response && error.response.status) {
-        statusCode = error.response.status;
-    } else if (error.name === 'GoogleGenerativeAIError') {
-        message = `Gemini API Error: ${error.message}`;
+    if (error.name === 'FailedYahooValidationError' || error.message?.includes('failed with status code 404')) { // Yahoo finance sometimes returns 404 for invalid symbols in quote
+        return res.status(404).json({ error: `Invalid symbol or no data found for trend summary: ${symbol}. Details: ${error.message}` });
     }
-
-    res.status(statusCode).json({ error: message, details: error.stack });
+    res.status(500).json({ error: 'Failed to generate trend summary from Yahoo Finance', details: error.message });
   }
 });
 

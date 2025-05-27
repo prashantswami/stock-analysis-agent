@@ -18,51 +18,45 @@ function StockSearch() {
     setError(null);
     setStockData(null);
 
-    // Append .BSE or .NS based on common Indian exchanges if not already present
     let querySymbol = symbol.toUpperCase();
-    if (!querySymbol.endsWith('.BSE') && !querySymbol.endsWith('.NS')) {
-      // Default to .BSE for now, or you can have a select for exchange
-      querySymbol += '.BSE'; 
+    if (!querySymbol.endsWith('.BO') && !querySymbol.endsWith('.NS')) {
+      querySymbol += '.BO'; 
     }
 
     try {
-      const response = await axios.get(`http://localhost:3001/api/stock?symbol=${querySymbol}`);
+      // Assuming your backend is on port 5001 now for this component too
+      const response = await axios.get(`http://localhost:5001/api/stock?symbol=${querySymbol}`);
       
-      if (response.data && response.data['Time Series (Daily)']) {
-        const timeSeries = response.data['Time Series (Daily)'];
-        const latestDate = Object.keys(timeSeries)[0];
-        const latestData = timeSeries[latestDate];
-        
-        if (latestData) {
-          setStockData({
-            symbol: response.data['Meta Data']['2. Symbol'],
-            open: parseFloat(latestData['1. open']).toFixed(2),
-            high: parseFloat(latestData['2. high']).toFixed(2),
-            low: parseFloat(latestData['3. low']).toFixed(2),
-            close: parseFloat(latestData['4. close']).toFixed(2),
-            date: latestDate,
-          });
-        } else {
-          setError('Could not retrieve the latest data for the symbol.');
-        }
-      } else if (response.data['Error Message']) {
-        setError(`API Error: ${response.data['Error Message']}`);
-      } else if (response.data['Note']){
-        setError(`API Note: ${response.data['Note']} (This may be due to API call limits. Please try again later.)`);
-      } 
-      else {
+      if (response.data && response.data.symbol) {
+        setStockData({
+          symbol: response.data.symbol,
+          open: response.data.regularMarketOpen?.toFixed(2) || 'N/A',
+          high: response.data.regularMarketDayHigh?.toFixed(2) || 'N/A',
+          low: response.data.regularMarketDayLow?.toFixed(2) || 'N/A',
+          close: response.data.regularMarketPrice?.toFixed(2) || 'N/A',
+          name: response.data.shortName || response.data.symbol, 
+          exchange: response.data.fullExchangeName || 'N/A',
+          date: response.data.regularMarketTime ? new Date(response.data.regularMarketTime * 1000).toLocaleDateString() : 'Current',
+        });
+      } else if (response.data && response.data.error) { 
+        setError(response.data.error);
+      } else {
         setError('Invalid data format received from API.');
       }
     } catch (err) {
       console.error('Error fetching stock data:', err);
-      setError(err.response?.data?.error || 'Failed to fetch stock data. Check if the server is running.');
+      if (err.response && err.response.data && err.response.data.error) {
+        setError(err.response.data.error); 
+      } else {
+        setError('Failed to fetch stock data. Check if the server is running or the symbol is correct.');
+      }
     }
     setLoading(false);
   };
 
   return (
     <div className="container mx-auto p-4 max-w-md">
-      <h1 className="text-2xl font-bold text-center mb-6">Stock Search</h1>
+      <h1 className="text-2xl font-bold text-center mb-6">Stock Search (Legacy)</h1>
       <form onSubmit={handleSubmit} className="mb-6">
         <div className="flex">
           <input
@@ -91,8 +85,9 @@ function StockSearch() {
 
       {stockData && (
         <div className="bg-white shadow-md rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-2">{stockData.symbol}</h2>
-          <p className="text-gray-600 mb-4">Data for: {stockData.date}</p>
+          <h2 className="text-xl font-semibold mb-2">{stockData.name} ({stockData.symbol})</h2>
+          <p className="text-gray-600 mb-1">Exchange: {stockData.exchange}</p>
+          <p className="text-gray-600 mb-4">Data as of: {stockData.date}</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-sm text-gray-500">Current Price (Close)</p>

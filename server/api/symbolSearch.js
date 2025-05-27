@@ -1,57 +1,48 @@
 import express from 'express';
-import axios from 'axios';
+import yahooFinance from 'yahoo-finance2';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const router = express.Router();
 
-const alphaVantageApiKey = process.env.ALPHA_VANTAGE_API_KEY;
+// No API key needed for yahooFinance.search()
 
 router.get('/', async (req, res) => {
-  const keywords = req.query.keywords;
+  const { query } = req.query;
 
-  if (!keywords) {
-    return res.status(400).json({ error: 'Keywords are required for symbol search' });
-  }
-
-  if (!alphaVantageApiKey) {
-    return res.status(500).json({ error: 'Alpha Vantage API key is missing.' });
+  if (!query) {
+    return res.status(400).json({ error: 'Search query is required' });
   }
 
   try {
-    const alphaVantageUrl = `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${keywords}&apikey=${alphaVantageApiKey}`;
-    console.log(`Symbol Search: Fetching Alpha Vantage URL: ${alphaVantageUrl}`);
-
-    const response = await axios.get(alphaVantageUrl);
-
-    if (response.data && response.data.bestMatches) {
-      res.json(response.data.bestMatches);
-    } else if (response.data && response.data['Error Message']) {
-      console.error('Alpha Vantage SYMBOL_SEARCH API Error:', response.data['Error Message']);
-      res.status(500).json({ error: `Alpha Vantage API Error: ${response.data['Error Message']}` });
-    } else if (response.data && response.data['Note']) {
-      console.warn('Alpha Vantage SYMBOL_SEARCH API Note:', response.data['Note']);
-      res.status(400).json({ error: `Alpha Vantage API Note: ${response.data['Note']} (This may be due to API call frequency limits or no matches found).` , bestMatches: []});
-    } else {
-      console.error('Error fetching from Alpha Vantage SYMBOL_SEARCH: Unexpected response format', response.data);
-      res.status(500).json({ error: 'Failed to fetch symbol search results from Alpha Vantage: Unexpected response format.', details: response.data });
-    }
-  } catch (error) {
-    console.error('Error in /api/symbol-search:', error.response ? error.response.data : error.message);
-    let statusCode = 500;
-    let message = 'An error occurred while processing your symbol search request.';
-
-    if (error.response && error.response.status) {
-        statusCode = error.response.status;
-    }
-    if (error.response && error.response.data && error.response.data.error) {
-        message = error.response.data.error;
-    } else if (error.message) {
-        message = error.message;
-    }
+    console.log(`Symbol Search: Searching Yahoo Finance for query: ${query}`);
+    const searchResults = await yahooFinance.search(query);
     
-    res.status(statusCode).json({ error: message, details: error.message });
+    // The searchResults object contains a `quotes` array which are the primary matches,
+    // and also news, options, etc. We'll focus on quotes.
+    // Each quote has: exchange, shortname, quoteType, symbol, longname, etc.
+    if (searchResults && searchResults.quotes && searchResults.quotes.length > 0) {
+      const bestMatches = searchResults.quotes.map(match => ({
+        symbol: match.symbol,
+        name: match.shortname || match.longname, // Prefer shortname, fallback to longname
+        exchange: match.exchange,
+        quoteType: match.quoteType
+      }));
+      res.json({ bestMatches });
+    } else {
+      console.log(`Symbol Search: No quotes found for query: ${query}`);
+      res.json({ bestMatches: [] }); // Return empty if no direct quote matches
+    }
+
+  } catch (error) {
+    console.error('Error fetching from Yahoo Finance SYMBOL_SEARCH equivalent:', error);
+    // yahoo-finance2 errors might have a specific structure or just be generic.
+    // Check for common error messages or types if they become apparent.
+    if (error.name === 'FailedYahooValidationError') {
+         return res.status(400).json({ error: `Invalid search query: ${query}. Details: ${error.message}` });
+    }
+    res.status(500).json({ error: 'Failed to perform symbol search with Yahoo Finance', details: error.message });
   }
 });
 
