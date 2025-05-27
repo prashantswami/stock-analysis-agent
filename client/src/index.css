@@ -1,0 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* REMOVE ALL OTHER CSS RULES FROM THE ORIGINAL VITE index.css */
+/* Specifically, remove:
+   - The second body rule with display:flex and place-items:center
+   - Default h1, a, button styles
+   - :root color definitions
+   - @media (prefers-color-scheme: light) block
+*/
